@@ -1,0 +1,125 @@
+# File: mqtt_to_db.py
+# Status: FINAL LENGKAP - Dengan perbaikan versi library dan sintaks
+
+import paho.mqtt.client as mqtt
+import json
+import time
+from datetime import datetime
+import pg8000.dbapi as pg
+import pytz
+
+# --- PENGATURAN ---
+BROKER_ADDRESS = "public.grootech.id"
+DB_CONFIG = {
+    'host': "127.0.0.1",
+    'database': "iot-banjir",
+    'user': "adam",
+    'password': "adam050504", # Ganti dengan password Anda
+    'port': 5432
+}
+# PETA LOKASI UNTUK MENDUKUNG SEMUA SENSOR ANDA
+LOCATION_MAP = {
+    "Polsri/panel_sensor_rumah_pompa": {"json_key": "RUMAH_POMPA", "location_id": 1},
+    "Polsri/panel_sensor_hulu": {"json_key": "HULU", "location_id": 2},
+    "Polsri/panel_sensor_hilir": {"json_key": "HILIR", "location_id": 3}
+}
+topics = list(LOCATION_MAP.keys())
+
+# --- FUNGSI-FUNGSI ---
+def save_row_to_db(waktu, nilai, nama_sensor, location_id):
+    db = None
+    try:
+        db = pg.connect(**DB_CONFIG)
+        cursor = db.cursor()
+        sql = "INSERT INTO sensor_readings (location_id, reading_time, data_value, sensor_name, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)"
+        now = datetime.now(pytz.utc)
+        val = (location_id, waktu, str(nilai), nama_sensor, now, now)
+        cursor.execute(sql, val)
+        db.commit()
+        print(f" -> LOKASI ID {location_id}: Data '{nama_sensor}'='{nilai}' berhasil disimpan.")
+    except pg.Error as err:
+        print(f"Error Database: {err}")
+    finally:
+        if db is not None:
+            db.close()
+
+def process_and_write_data(topic, payload):
+    location_config = LOCATION_MAP.get(topic)
+    if not location_config:
+        return
+
+    waktu_grup = datetime.now(pytz.utc)
+    units = {'Suhu': '° C', 'Kelembapan': ' RH', 'Tekanan Udara': ' hPa', 'Sensor_Water Level': 'cm', 'Sensor_Curah Hujan': ' mm'}
+    name_map = {'Sensor_Hujan': 'Sensor_Curah Hujan', 'Sensor_Level': 'Sensor_Water Level'}
+    
+    list_sensor_data = payload.get(location_config['json_key'], [])
+
+    for sensor_data in list_sensor_data:
+        original_sensor_name = sensor_data.get('name', 'N/A')
+        data_value = sensor_data.get('data')
+
+        if original_sensor_name == 'Sensor_Suhu':
+            try:
+                parts = str(data_value).split(',')
+                if len(parts) >= 5:
+                    sub_sensors = {
+                        'Suhu': float(parts[0]) / 10,
+                        'Kelembapan': float(parts[1]) / 10,
+                        'Tekanan Udara': float(parts[4]) + 800 
+                    }
+                    for name, calculated_value in sub_sensors.items():
+                        unit = units.get(name, '')
+                        display_value = f"{calculated_value}{unit}"
+                        save_row_to_db(waktu_grup, display_value, name, location_config['location_id'])
+            except Exception as e:
+                print(f" -> Gagal memproses data Sensor Suhu: {e}")
+        else:
+            final_data_value = data_value
+            if original_sensor_name != 'Sensor_Hujan':
+                try:
+                    final_data_value = float(data_value) / 10
+                except (ValueError, TypeError):
+                    pass
+            
+            unit = units.get(original_sensor_name, '')
+            display_value = f"{final_data_value}{unit}"
+            display_sensor_name = name_map.get(original_sensor_name, original_sensor_name)
+            save_row_to_db(waktu_grup, display_value, display_sensor_name, location_config['location_id'])
+
+def on_message(client, userdata, msg):
+    try:
+        payload = json.loads(msg.payload.decode('utf-8'))
+        process_and_write_data(msg.topic, payload)
+    except Exception as e:
+        print(f"Gagal memproses pesan: {e}")
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Berhasil terhubung/rekoneksi ke broker MQTT!")
+        for topic in topics:
+            client.subscribe(topic)
+            print(f" -> Berlangganan topik: {topic}")
+    else:
+        print(f"Gagal terhubung, kode hasil: {rc}")
+
+def on_disconnect(client, userdata, rc):
+    print(f"Koneksi terputus! (kode: {rc})")
+
+def main():
+    # ▼▼▼ PERBAIKAN DI SINI: Menggunakan cara lama yang kompatibel ▼▼▼
+    client = mqtt.Client("db_logger_" + str(time.time()))
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message = on_message
+    
+    try:
+        client.connect(BROKER_ADDRESS, 1883, 60)
+    except Exception as e:
+        print(f"Gagal terhubung saat awal: {e}")
+        return
+
+    print("Skrip berjalan. Setiap data masuk akan langsung disimpan ke database...")
+    try:
+        client.loop_forever()
+    except KeyboardInterrupt:
+        print("Skrip dihentikan 

@@ -11,7 +11,7 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     // Mengizinkan koneksi dari alamat web Laravel Anda.
-    origin: "http://127.0.0.1:8000",
+    origin: "https://puprsvmos.info",
     methods: ["GET", "POST"]
   }
 });

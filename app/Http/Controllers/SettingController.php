@@ -6,22 +6,27 @@ use Illuminate\Http\Request;
 
 class SettingController extends Controller
 {
-    public function index()
+    /**
+     * Create a new controller instance.
+     *
+     * @return void
+     */
+    public function __construct()
     {
-        $data['page_title'] = 'Pengaturan';
-        return view('settings.index', $data);
-    }
-    
-    public function sensor()
-    {
-        $data['page_title'] = 'Pengaturan Sensor';
-        return view('settings.index', $data);
-    }
-    
-    public function alarm()
-    {
-        $data['page_title'] = 'Pengaturan Alarm';
-        return view('settings.index', $data);
+        $this->middleware('auth');
     }
 
+    /**
+     * Show the settings menu page.
+     *
+     * @return \Illuminate\Contracts\Support\Renderable
+     */
+    public function index()
+    {
+        // Data yang akan dikirim ke view
+        $data['page_title'] = 'Pengaturan Sistem';
+
+        // Mengarahkan ke file view 'settings.menu'
+        return view('settings.menu', $data);
+    }
 }

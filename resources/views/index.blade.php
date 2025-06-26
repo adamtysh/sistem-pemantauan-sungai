@@ -86,7 +86,7 @@
 @push('js')
 <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <script>
-    const socket = io("{{ env('WEBSOCKET_SERVER_URL', 'http://127.0.0.1:3001') }}", {
+    const socket = io("{{ env('WEBSOCKET_SERVER_URL', 'https://puprsvmos.info') }}", {
         transports: ['websocket'],
     });
 

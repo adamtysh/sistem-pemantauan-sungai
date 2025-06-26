@@ -6,7 +6,7 @@ const { io } = require("socket.io-client");
 const axios = require('axios');
 
 // ================== PENGATURAN PENTING (SUDAH DIISI) ==================
-const LARAVEL_URL = 'http://127.0.0.1:8000';
+const LARAVEL_URL = 'http://127.0.0.1:';
 
 // --- Kredensial Anda berdasarkan file dan riwayat percakapan ---
 const WHATSAPP_PHONE_NUMBER = '6285935056842';

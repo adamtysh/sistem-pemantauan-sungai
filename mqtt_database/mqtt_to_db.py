@@ -1,41 +1,45 @@
 # File: mqtt_to_db.py
-# Status: FINAL - Dengan Rumus Perhitungan yang Akurat
+# Status: FINAL - Menyimpan data setiap 1 menit (60 detik)
 
 import paho.mqtt.client as mqtt
 import json
 import time
 from datetime import datetime
-import os
 import pg8000.dbapi as pg
+import pytz
 
-# --- Pengaturan ---
+# --- PENGATURAN ---
 BROKER_ADDRESS = "public.grootech.id"
-MQTT_TOPIC = "Polsri/panel_sensor_rumah_pompa"
-BROKER_PORT = 1883
-PROCESS_INTERVAL = 60
-
-# --- PENGATURAN KONEKSI DATABASE POSTGRESQL ---
+PROCESS_INTERVAL = 60  # Interval dalam detik (60 detik = 1 menit)
 DB_CONFIG = {
     'host': "127.0.0.1",
     'database': "iot-banjir",
-    'user': "postgres",
-    'password': "adam050504",
+    'user': "adam",
+    'password': "adam050504", # Ganti dengan password Anda
     'port': 5432
 }
+LOCATION_MAP = {
+    "Polsri/panel_sensor_rumah_pompa": {"json_key": "RUMAH_POMPA", "location_id": 1},
+    "Polsri/panel_sensor_hulu": {"json_key": "HULU", "location_id": 2},
+    "Polsri/panel_sensor_hilir": {"json_key": "HILIR", "location_id": 3}
+}
+topics = list(LOCATION_MAP.keys())
 
-latest_data = {}
+# Variabel global untuk menyimpan data terbaru dari setiap topik
+latest_data_buffer = {}
 
-def save_row_to_db(waktu, nilai, nama_sensor):
+# --- FUNGSI-FUNGSI ---
+def save_row_to_db(waktu, nilai, nama_sensor, location_id):
     db = None
     try:
         db = pg.connect(**DB_CONFIG)
         cursor = db.cursor()
-        sql = "INSERT INTO sensor_readings (reading_time, data_value, sensor_name, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)"
-        now = datetime.now()
-        val = (waktu, str(nilai), nama_sensor, now, now)
+        sql = "INSERT INTO sensor_readings (location_id, reading_time, data_value, sensor_name, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)"
+        now = datetime.now(pytz.utc)
+        val = (location_id, waktu, str(nilai), nama_sensor, now, now)
         cursor.execute(sql, val)
         db.commit()
-        print(f" -> Data untuk '{nama_sensor}' dengan nilai '{nilai}' berhasil disimpan ke database.")
+        print(f"  -> Data '{nama_sensor}'='{nilai}' dari Lokasi ID {location_id} berhasil disimpan.")
     except pg.Error as err:
         print(f"Error Database: {err}")
     finally:
@@ -43,29 +47,32 @@ def save_row_to_db(waktu, nilai, nama_sensor):
             db.close()
 
 def process_and_write_data():
-    if not latest_data:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Tidak ada data baru, menunggu...")
+    if not latest_data_buffer:
+        print(f"[{datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%H:%M:%S')}] Tidak ada data baru untuk disimpan, menunggu...")
         return
 
-    print(f"--- Memproses Grup Data per Menit ---")
-    waktu_grup = datetime.now()
-    # DIUBAH: Satuan untuk Tekanan Udara diperbarui ke hPa
-    units = {'Suhu': '° C', 'Kelembapan': ' RH', 'Tekanan Udara': ' hPa', 'Sensor_Level': 'cm', 'Sensor_Hujan': ' mm'}
-    name_map = {'Sensor_Hujan': 'Sensor_Curah Hujan', 'Sensor_Level': 'Sensor_Water Level'}
-    sensor_order = ['Sensor_Level', 'Sensor_Hujan', 'Sensor_Suhu']
+    print(f"--- Memproses Grup Data per {PROCESS_INTERVAL} detik ---")
+    
+    # Proses setiap data yang ada di buffer
+    for topic, payload in latest_data_buffer.items():
+        location_config = LOCATION_MAP.get(topic)
+        if not location_config:
+            continue
 
-    for sensor_name in sensor_order:
-        if sensor_name in latest_data:
-            sensor_data = latest_data[sensor_name]
+        waktu_grup = datetime.now(pytz.utc)
+        units = {'Suhu': '° C', 'Kelembapan': ' RH', 'Tekanan Udara': ' hPa', 'Sensor_Water Level': 'cm', 'Sensor_Curah Hujan': ' mm'}
+        name_map = {'Sensor_Hujan': 'Sensor_Curah Hujan', 'Sensor_Level': 'Sensor_Water Level'}
+        
+        list_sensor_data = payload.get(location_config['json_key'], [])
+
+        for sensor_data in list_sensor_data:
             original_sensor_name = sensor_data.get('name', 'N/A')
             data_value = sensor_data.get('data')
-            if data_value is None or str(data_value).strip() == "": continue
-            
+
             if original_sensor_name == 'Sensor_Suhu':
                 try:
                     parts = str(data_value).split(',')
                     if len(parts) >= 5:
-                        # DIUBAH: Rumus perhitungan disesuaikan dengan buku panduan
                         sub_sensors = {
                             'Suhu': float(parts[0]) / 10,
                             'Kelembapan': float(parts[1]) / 10,
@@ -74,63 +81,66 @@ def process_and_write_data():
                         for name, calculated_value in sub_sensors.items():
                             unit = units.get(name, '')
                             display_value = f"{calculated_value}{unit}"
-                            save_row_to_db(waktu_grup.strftime('%Y-%m-%d %H:%M:%S'), display_value, name)
+                            save_row_to_db(waktu_grup, display_value, name, location_config['location_id'])
                 except Exception as e:
-                    print(f" -> Gagal memproses data Sensor Suhu: {e}")
+                    print(f"   -> Gagal memproses data Sensor Suhu: {e}")
             else:
                 final_data_value = data_value
                 if original_sensor_name != 'Sensor_Hujan':
-                    try: final_data_value = float(data_value) / 10
-                    except (ValueError, TypeError): pass
+                    try:
+                        final_data_value = float(data_value) / 10
+                    except (ValueError, TypeError):
+                        pass
                 
                 unit = units.get(original_sensor_name, '')
                 display_value = f"{final_data_value}{unit}"
                 display_sensor_name = name_map.get(original_sensor_name, original_sensor_name)
-                save_row_to_db(waktu_grup.strftime('%Y-%m-%d %H:%M:%S'), display_value, display_sensor_name)
-            
-    latest_data.clear()
+                save_row_to_db(waktu_grup, display_value, display_sensor_name, location_config['location_id'])
 
-# --- Sisa kode (on_message, on_connect, on_disconnect, main) tetap sama ---
+    # Kosongkan buffer setelah selesai diproses
+    latest_data_buffer.clear()
+
+
 def on_message(client, userdata, msg):
+    """Fungsi ini hanya akan menyimpan data terbaru ke buffer."""
     try:
-        data_dict = json.loads(msg.payload.decode('utf-8'))
-        list_sensor_data = data_dict["RUMAH_POMPA"]
-        for sensor_data in list_sensor_data:
-            sensor_name = sensor_data.get('name')
-            if sensor_name: latest_data[sensor_name] = sensor_data
-    except Exception: pass
+        # Simpan seluruh payload dengan topiknya sebagai kunci
+        latest_data_buffer[msg.topic] = json.loads(msg.payload.decode('utf-8'))
+    except Exception as e:
+        print(f"Gagal memproses pesan ke buffer: {e}")
+
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("Berhasil terhubung/rekoneksi ke broker MQTT!")
-        client.subscribe(MQTT_TOPIC)
-    else: print(f"Gagal terhubung, kode hasil: {rc}")
+        for topic in topics:
+            client.subscribe(topic)
+            print(f" -> Berlangganan topik: {topic}")
+    else:
+        print(f"Gagal terhubung, kode hasil: {rc}")
 
-def on_disconnect(client, userdata, rc):
-    print(f"Koneksi terputus! (kode: {rc})")
 
 def main():
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, "laravel_pg_writer_accurate")
+    client = mqtt.Client("db_logger_interval_" + str(time.time()))
     client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
     client.on_message = on_message
-    is_connected = False
-    while not is_connected:
-        try:
-            client.connect(BROKER_ADDRESS, BROKER_PORT, 60)
-            is_connected = True
-        except Exception as e:
-            print(f"Gagal terhubung saat awal: {e}. Mencoba lagi dalam 5 detik...")
-            time.sleep(5)
-    client.loop_start() 
-    last_processed_time = time.time()
-    print("Skrip berjalan. Data akan disimpan ke database PostgreSQL setiap 1 menit...")
+    
+    try:
+        client.connect(BROKER_ADDRESS, 1883, 60)
+    except Exception as e:
+        print(f"Gagal terhubung saat awal: {e}")
+        return
+
+    client.loop_start()  # Jalankan loop di thread terpisah
+
+    print(f"Skrip berjalan. Data akan disimpan ke database setiap {PROCESS_INTERVAL} detik...")
     try:
         while True:
-            if time.time() - last_processed_time >= PROCESS_INTERVAL:
-                process_and_write_data()
-                last_processed_time = time.time()
-            time.sleep(1)
+            # Tunggu interval waktu
+            time.sleep(PROCESS_INTERVAL)
+            # Proses data yang sudah terkumpul di buffer
+            process_and_write_data()
+            
     except KeyboardInterrupt:
         print("Skrip dihentikan oleh pengguna.")
     finally:
